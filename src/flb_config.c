@@ -83,6 +83,16 @@ struct flb_service_config service_configs[] = {
      offsetof(struct flb_config, http_port)},
 #endif
 
+#ifdef FLB_HAVE_METRICS
+    {FLB_CONF_STR_PROMETHEUS_FILE,
+     FLB_CONF_TYPE_BOOL,
+     offsetof(struct flb_config, prometheus_file)},
+
+    {FLB_CONF_STR_PROMETHEUS_FILE_PATH,
+     FLB_CONF_TYPE_STR,
+     offsetof(struct flb_config, prometheus_file_path)},
+#endif
+
     /* Storage */
     {FLB_CONF_STORAGE_PATH,
      FLB_CONF_TYPE_STR,
@@ -136,6 +146,11 @@ struct flb_config *flb_config_init()
     config->http_server  = FLB_FALSE;
     config->http_listen  = flb_strdup(FLB_CONFIG_HTTP_LISTEN);
     config->http_port    = flb_strdup(FLB_CONFIG_HTTP_PORT);
+#endif
+
+#ifdef FLB_HAVE_METRICS
+    config->prometheus_file      = FLB_FALSE;
+    config->prometheus_file_path = NULL;
 #endif
 
     config->cio          = NULL;
@@ -250,8 +265,8 @@ void flb_config_exit(struct flb_config *config)
         collector = mk_list_entry(head, struct flb_input_collector, _head);
 
         if (collector->type == FLB_COLLECT_TIME) {
-            mk_event_timeout_destroy(config->evl, &collector->event);
             if (collector->fd_timer > 0) {
+                mk_event_timeout_destroy(config->evl, &collector->event);
                 mk_event_closesocket(collector->fd_timer);
             }
         } else {

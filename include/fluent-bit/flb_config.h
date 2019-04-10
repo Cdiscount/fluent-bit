@@ -140,6 +140,8 @@ struct flb_config {
     /* Metrics exporter */
 #ifdef FLB_HAVE_METRICS
     void *metrics;
+    int prometheus_file;            /* Prometheus metrics written in a file */
+    char *prometheus_file_path;     /* File path for prometheus metrics */
 #endif
 
     /* HTTP Server */
@@ -221,6 +223,12 @@ enum conf_type {
 #define FLB_CONF_STR_HTTP_LISTEN     "HTTP_Listen"
 #define FLB_CONF_STR_HTTP_PORT       "HTTP_Port"
 #endif /* !FLB_HAVE_HTTP_SERVER */
+
+/* Prometheus metrics to file */
+#ifdef FLB_HAVE_METRICS
+#define FLB_CONF_STR_PROMETHEUS_FILE         "Prometheus_File"
+#define FLB_CONF_STR_PROMETHEUS_FILE_PATH    "Prometheus_File_Path"
+#endif
 
 /* Storage / Chunk I/O */
 #define FLB_CONF_STORAGE_PATH          "storage.path"

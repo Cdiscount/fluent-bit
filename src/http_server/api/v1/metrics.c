@@ -50,7 +50,6 @@ static struct flb_hs_buf *metrics_get_latest()
     if (mk_list_size(metrics_list) == 0) {
         return NULL;
     }
-
     buf = mk_list_entry_last(metrics_list, struct flb_hs_buf, _head);
     return buf;
 }
@@ -89,58 +88,7 @@ int cleanup_metrics()
     return c;
 }
 
-/*
- * Callback invoked every time some metrics are received through a
- * message queue channel. This function runs in a Monkey HTTP thread
- * worker and it purpose is to take the metrics data and store it
- * somewhere so then it can be available by the end-points upon
- * HTTP client requests.
- */
-static void cb_mq_metrics(mk_mq_t *queue, void *data, size_t size)
-{
-    int ret;
-    char *json_buf;
-    size_t json_size;
-    struct flb_hs_buf *buf;
-    struct mk_list *metrics_list = NULL;
-
-    metrics_list = pthread_getspecific(hs_metrics_key);
-    if (!metrics_list) {
-        metrics_list = flb_malloc(sizeof(struct mk_list));
-        if (!metrics_list) {
-            flb_errno();
-            return;
-        }
-        mk_list_init(metrics_list);
-        pthread_setspecific(hs_metrics_key, metrics_list);
-    }
-
-    /* Convert msgpack to JSON */
-    ret = flb_msgpack_raw_to_json_str(data, size, &json_buf, &json_size);
-    if (ret < 0) {
-        return;
-    }
-
-    buf = flb_malloc(sizeof(struct flb_hs_buf));
-    if (!buf) {
-        flb_errno();
-        return;
-    }
-    buf->users = 0;
-    buf->data = json_buf;
-    buf->size = json_size;
-
-    buf->raw_data = flb_malloc(size);
-    memcpy(buf->raw_data, data, size);
-    buf->raw_size = size;
-
-    mk_list_add(&buf->_head, metrics_list);
-
-    cleanup_metrics();
-}
-
-/* API: expose metrics in Prometheus format /api/v1/metrics/prometheus */
-void cb_metrics_prometheus(mk_request_t *request, void *data)
+static flb_sds_t request_metrics(flb_sds_t sds, struct flb_hs_buf *buf)
 {
     int i;
     int j;
@@ -148,33 +96,12 @@ void cb_metrics_prometheus(mk_request_t *request, void *data)
     int len;
     int time_len;
     long now;
-    flb_sds_t sds;
     size_t off = 0;
-    struct flb_hs_buf *buf;
     msgpack_unpacked result;
     msgpack_object map;
     char tmp[32];
     char time_str[64];
     struct timeval tp;
-
-    buf = metrics_get_latest();
-    if (!buf) {
-        mk_http_status(request, 404);
-        mk_http_done(request);
-        return;
-    }
-
-    /* ref count */
-    buf->users++;
-
-    /* Compose outgoing buffer string */
-    sds = flb_sds_create_size(1024);
-    if (!sds) {
-        mk_http_status(request, 500);
-        mk_http_done(request);
-        buf->users--;
-        return;
-    }
 
     /* current time */
     gettimeofday(&tp, NULL);
@@ -229,15 +156,102 @@ void cb_metrics_prometheus(mk_request_t *request, void *data)
         }
     }
     msgpack_unpacked_destroy(&result);
-    buf->users--;
+    return sds;
+}
 
-    mk_http_status(request, 200);
-    mk_http_header(request,
-                   "Content-Type", 12,
-                   PROMETHEUS_HEADER, sizeof(PROMETHEUS_HEADER) - 1);
-    mk_http_send(request, sds, flb_sds_len(sds), NULL);
-    mk_http_done(request);
+static void cb_metrics_prometheus_to_file(char *file_path)
+{
+    flb_sds_t sds;
+    struct flb_hs_buf *buf;
+    FILE *file_desc;
+
+    buf = metrics_get_latest();
+    if (!buf) {
+        return;
+    }
+
+    /* ref count */
+    buf->users++;
+    /* Compose outgoing buffer string */
+    sds = flb_sds_create_size(1024);
+    if (!sds) {
+        buf->users--;
+        return;
+    }
+
+    sds = request_metrics(sds, buf);
+
+    buf->users--;  
+
+    file_desc = fopen(file_path, "w+");
+    if (file_desc == NULL) {
+        flb_error("[prometheus_file_path] %s : no such file or directory",
+                  file_path);
+    }
+    else {
+        /* writing metrics in specified file */
+        fprintf(file_desc, "%s\n", sds);
+        fclose(file_desc);
+    }
+
     flb_sds_destroy(sds);
+}
+
+/*
+ * Callback invoked every time some metrics are received through a
+ * message queue channel. This function runs in a Monkey HTTP thread
+ * worker and it purpose is to take the metrics data and store it
+ * somewhere so then it can be available by the end-points upon
+ * HTTP client requests.
+ */
+static void cb_mq_metrics(mk_mq_t *queue, void *data, size_t size)
+{
+    int ret;
+    char *json_buf;
+    size_t json_size;
+    struct flb_hs_buf *buf;
+    struct mk_list *metrics_list = NULL;
+    /* retrieves file path  */
+    char *prom_file_path = (char *)queue->data;
+
+    metrics_list = pthread_getspecific(hs_metrics_key);
+    if (!metrics_list) {
+        metrics_list = flb_malloc(sizeof(struct mk_list));
+        if (!metrics_list) {
+            flb_errno();
+            return;
+        }
+        mk_list_init(metrics_list);
+        pthread_setspecific(hs_metrics_key, metrics_list);
+    }
+
+    /* Convert msgpack to JSON */
+    ret = flb_msgpack_raw_to_json_str(data, size, &json_buf, &json_size);
+    if (ret < 0) {
+        return;
+    }
+
+    buf = flb_malloc(sizeof(struct flb_hs_buf));
+    if (!buf) {
+        flb_errno();
+        return;
+    }
+    buf->users = 0;
+    buf->data = json_buf;
+    buf->size = json_size;
+
+    buf->raw_data = flb_malloc(size);
+    memcpy(buf->raw_data, data, size);
+    buf->raw_size = size;
+
+    mk_list_add(&buf->_head, metrics_list);
+
+    /* call write metrics to a file if the option was activated */
+    if (prom_file_path) {
+        cb_metrics_prometheus_to_file(prom_file_path);
+    }
+
+    cleanup_metrics();
 }
 
 /* API: expose built-in metrics /api/v1/metrics */
@@ -261,6 +275,44 @@ static void cb_metrics(mk_request_t *request, void *data)
     buf->users--;
 }
 
+/* API: expose metrics in Prometheus format /api/v1/metrics/prometheus */
+void cb_metrics_prometheus(mk_request_t *request, void *data)
+{
+    flb_sds_t sds;
+    struct flb_hs_buf *buf;
+
+    buf = metrics_get_latest();
+    if (!buf) {
+        mk_http_status(request, 404);
+        mk_http_done(request);
+        return;
+    }
+
+    /* ref count */
+    buf->users++;
+
+    /* Compose outgoing buffer string */
+    sds = flb_sds_create_size(1024);
+    if (!sds) {
+        mk_http_status(request, 500);
+        mk_http_done(request);
+        buf->users--;
+        return;
+    }
+
+    sds = request_metrics(sds, buf);
+
+    buf->users--;
+
+    mk_http_status(request, 200);
+    mk_http_header(request,
+                   "Content-Type", 12,
+                   PROMETHEUS_HEADER, sizeof(PROMETHEUS_HEADER) - 1);
+    mk_http_send(request, sds, flb_sds_len(sds), NULL);
+    mk_http_done(request);
+    flb_sds_destroy(sds);
+}
+
 /* Perform registration */
 int api_v1_metrics(struct flb_hs *hs)
 {
@@ -268,7 +320,17 @@ int api_v1_metrics(struct flb_hs *hs)
     pthread_key_create(&hs_metrics_key, NULL);
 
     /* Create a message queue */
-    hs->qid = mk_mq_create(hs->ctx, "/metrics", cb_mq_metrics, NULL);
+    if (hs->config->prometheus_file && hs->config->prometheus_file_path) {
+        /* Sends file path for metrics to be written in  */
+        hs->qid = mk_mq_create(hs->ctx, "/metrics",
+                               cb_mq_metrics, hs->config->prometheus_file_path);
+    }
+    else if (hs->config->prometheus_file && !hs->config->prometheus_file_path) {
+        flb_warn("[prometheus_file]: option activated but no file path");
+    }
+    else {
+        hs->qid = mk_mq_create(hs->ctx, "/metrics", cb_mq_metrics, NULL);
+    }
 
     /* HTTP end-points */
     mk_vhost_handler(hs->ctx, hs->vid, "/api/v1/metrics/prometheus",

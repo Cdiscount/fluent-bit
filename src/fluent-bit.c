@@ -147,6 +147,10 @@ static void flb_help(int rc, struct flb_config *config)
     printf("  -P, --port\t\tset HTTP server TCP port (default: %s)\n",
            FLB_CONFIG_HTTP_PORT);
 #endif
+#ifdef FLB_HAVE_METRICS
+    printf("  -M, --prometheus_file\t\tenable Prometheus metrics to file\n");
+    printf("  -W, --prometheus_file_path\tfile path for Prometheus metrics\n");
+#endif
     printf("  -s, --coro_stack_size\tSet coroutines stack size in bytes "
            "(default: %i)\n", config->coro_stack_size);
     printf("  -q, --quiet\t\tquiet mode\n");
@@ -621,6 +625,10 @@ int main(int argc, char **argv)
         { "http_listen",     required_argument, NULL, 'L' },
         { "http_port",       required_argument, NULL, 'P' },
 #endif
+#ifdef FLB_HAVE_METRICS
+        { "prometheus_file",       no_argument      , NULL, 'M'  },
+        { "prometheus_file_path",  required_argument, NULL, 'W'  },
+#endif
         { NULL, 0, NULL, 0 }
     };
 
@@ -659,7 +667,7 @@ int main(int argc, char **argv)
     /* Parse the command line options */
     while ((opt = getopt_long(argc, argv,
                               "b:c:df:i:m:o:R:F:p:e:"
-                              "t:l:vqVhL:HP:s:S",
+                              "t:l:vqVhL:HP:s:S:W:M",
                               long_opts, NULL)) != -1) {
 
         switch (opt) {
@@ -766,6 +774,17 @@ int main(int argc, char **argv)
                 flb_free(config->http_port);
             }
             config->http_port = flb_strdup(optarg);
+            break;
+#endif
+#ifdef FLB_HAVE_METRICS
+        case 'M':
+            config->prometheus_file = FLB_TRUE;
+            break;
+        case 'W':
+            if (config->prometheus_file_path) {
+                flb_free(config->prometheus_file_path);
+            }
+            config->prometheus_file_path = flb_strdup(optarg);
             break;
 #endif
         case 'V':
